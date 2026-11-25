@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DuoStream - Co-Host Theater</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      background: #0d0d11;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0;
+      padding: 16px;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .header h2 { margin: 0; font-size: 20px; }
+    #status {
+      padding: 5px 14px;
+      border-radius: 20px;
+      background: #23232e;
+      color: #ffb74d;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .stage {
+      position: relative;
+      width: 100%;
+      max-width: 1200px;
+      aspect-ratio: 16 / 9;
+      max-height: calc(100vh - 80px);
+      background: #000;
+      border-radius: 14px;
+      border: 1px solid #2e2e3a;
+      overflow: hidden;
+      box-shadow: 0 12px 35px rgba(0,0,0,0.6);
+    }
+    #remoteVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+    .self-pip {
+      position: absolute;
+      bottom: 2.5%;
+      right: 1.5%;
+      width: 24%;
+      height: 28%;
+      background: #181820;
+      border: 2px solid #10b981;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.7);
+    }
+    #localVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    .pip-label {
+      position: absolute;
+      bottom: 6px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.75);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #10b981;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>DuoStream Co-Host Theater</h2>
+    <span id="status">Waiting for Host...</span>
+  </div>
+
+  <div class="stage">
+    <video id="remoteVideo" autoplay playsinline></video>
+    <div class="self-pip">
+      <video id="localVideo" autoplay playsinline muted></video>
+      <span class="pip-label">You (Co-Host)</span>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const roomId = new URLSearchParams(window.location.search).get('room') || 'duostream-room-1';
+    const socket = io();
+    const statusEl = document.getElementById('status');
+    let pc;
+
+    const rtcConfig = {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    };
+
+    async function boostVideoBitrate(peerConn) {
+      const senders = peerConn.getSenders();
+      for (const sender of senders) {
+        if (sender.track && sender.track.kind === 'video') {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = 2500000; // 2.5 Mbps HD
+          params.encodings[0].scaleResolutionDownBy = 1.0;
+          try { await sender.setParameters(params); } catch (e) {}
+        }
+      }
+    }
+
+    async function init() {
+      try {
+        const localStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          audio: { echoCancellation: true, noiseSuppression: true }
+        });
+        document.getElementById('localVideo').srcObject = localStream;
+
+        pc = new RTCPeerConnection(rtcConfig);
+        localStream.getTracks().forEach(track => {
+          if (track.kind === 'video') track.contentHint = 'motion';
+          pc.addTrack(track, localStream);
+        });
+
+        pc.ontrack = (event) => {
+          document.getElementById('remoteVideo').srcObject = event.streams[0];
+          statusEl.innerText = 'Connected to Host! (HD Mode)';
+          statusEl.style.color = '#66bb6a';
+          boostVideoBitrate(pc);
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit('signal', { signal: { candidate: event.candidate } });
+          }
+        };
+
+        socket.emit('join-room', roomId);
+
+        socket.on('peer-joined', async () => {
+          statusEl.innerText = 'Host joined! Negotiating HD video...';
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('signal', { signal: { sdp: pc.localDescription } });
+        });
+
+        socket.on('signal', async ({ signal }) => {
+          if (signal.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            if (signal.sdp.type === 'offer') {
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              socket.emit('signal', { signal: { sdp: pc.localDescription } });
+              boostVideoBitrate(pc);
+            }
+          } else if (signal.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          }
+        });
+      } catch (err) {
+        statusEl.innerText = 'Camera/Mic error: ' + err.message;
+        statusEl.style.color = '#ef5350';
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

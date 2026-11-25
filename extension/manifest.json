@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "DuoStream Multiplexer",
+  "version": "1.0.0",
+  "description": "WebRTC P2P split-screen camera compositor and stream relay.",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.ome.tv/*",
+        "http://localhost:3000/*"
+      ],
+      "js": ["socket.io.min.js", "inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
